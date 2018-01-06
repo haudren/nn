@@ -18,15 +18,40 @@ def label_to_vector(label):
     return out
 
 def image_to_vector(image):
-    return np.reshape(image, (image.size,))
+    return np.reshape(image, (image.size,)).astype('float64')
 
 def load_pair_mnist(datafile, labelfile):
-    return [image_to_vector(i) for i in read_idx(datafile)], [label_to_vector(l) for l in read_idx(labelfile)]
+    return [image_to_vector(i)/255 for i in read_idx(datafile)], [label_to_vector(l) for l in read_idx(labelfile)]
 
 def load_mnist():
     train = load_pair_mnist("data/train-images-idx3-ubyte", "data/train-labels-idx1-ubyte")
     test = load_pair_mnist("data/t10k-images-idx3-ubyte", "data/t10k-labels-idx1-ubyte")
     return train, test
+
+class QuadraticCost(object):
+    def __init__(self, nn):
+        self.nn = nn
+
+    def value(self, y):
+        diff = self.nn.layers[-1].activation - y
+        return 1/2*diff.dot(diff)
+
+    def derivative(self, y):
+        return self.nn.layers[-1].activation - y
+
+    def delta(y):
+        return (self.nn.layers[-1].activation - y)*self.nn.layers[-1].derivative()
+
+class CrossEntropyCost(object):
+    def __init__(self, nn):
+        self.nn = nn
+
+    def value(self, y):
+        a = self.nn.layers[-1].activation
+        return -(y.dot(np.log(a)) + (1-y).dot(np.log(1-a)))
+
+    def delta(self, y):
+        return (self.nn.layers[-1].activation - y)
 
 class Layer(object):
     """A layer is a collection of neurons"""
@@ -41,6 +66,7 @@ class Layer(object):
 
     def forward(self, input_data):
         self.activation = sigmoid(self.biases+self.weights.dot(input_data))
+        return self.activation
 
     def derivative(self):
         return self.activation*(1-self.activation)
@@ -53,15 +79,21 @@ class Layer(object):
         self.weights_gradient = np.outer(error, prev_activation)
 
     def randomize(self):
-        self.weights = np.random.standard_normal(self.weights.shape)
+        self.weights = np.random.normal(loc=0.0, scale=1/np.sqrt(self.input_size), size=self.weights.shape)
         self.biases = np.random.standard_normal(self.biases.shape)
 
 class NeuralNetwork(object):
     """A neural network is a sequence of layers"""
 
-    def __init__(self, sizes):
+    def __init__(self, sizes, cost='quadratic'):
         """The parameter is a sequence of layer sizes (number of neurons). Note that the first element is the size of your input data and the last one the size of your output"""
         self.layers = [Layer(sizes[i], sizes[i+1]) for i in range(len(sizes)-1)]
+        if cost == 'quadratic':
+            self.cost = QuadraticCost(self)
+        elif cost == 'ce':
+            self.cost = CrossEntropyCost(self)
+        else:
+            raise ValueError("Cost must quadratic or cross-entropy (ce)")
 
     def forward_propagation(self, input_data):
         self.layers[0].forward(input_data)
@@ -69,17 +101,8 @@ class NeuralNetwork(object):
             self.layers[i].forward(self.layers[i-1].activation)
         return self.layers[-1].activation
 
-    def cost(self, input_label):
-        a = self.layers[-1].activation
-        diff = a - input_label
-        return 1/2*diff.dot(diff)
-
-    def cost_derivative(self, input_label):
-        a = self.layers[-1].activation
-        return a - input_label
-
     def backward_propagation(self, input_data, input_label):
-        delta = self.cost_derivative(input_label)*self.layers[-1].derivative()
+        delta = self.cost.delta(input_label)
         self.layers[-1].gradients(delta, self.layers[-2].activation)
         for i in range(2, len(self.layers)):
             delta = self.layers[-i].backward_propagation(delta, self.layers[-i+1].weights)
@@ -87,10 +110,10 @@ class NeuralNetwork(object):
         delta = self.layers[0].backward_propagation(delta, self.layers[1].weights)
         self.layers[0].gradients(delta, input_data)
 
-    def train_batch(self, inputs, labels, learning_rate):
+    def train_batch(self, batch, learning_rate, reg=0.0):
         sum_bias_gradients = [np.zeros_like(l.biases) for l in self.layers]
         sum_weight_gradients = [np.zeros_like(l.weights) for l in self.layers]
-        for x, y in zip(inputs, labels):
+        for x, y in batch:
             self.forward_propagation(x)
             self.backward_propagation(x, y)
             for l, sb, sw in zip(self.layers, sum_bias_gradients, sum_weight_gradients):
@@ -98,8 +121,8 @@ class NeuralNetwork(object):
                 sw += l.weights_gradient
 
         for l, sb, sw in zip(self.layers, sum_bias_gradients, sum_weight_gradients):
-            l.biases -= learning_rate/len(inputs)*sb
-            l.weights -= learning_rate/len(inputs)*sw
+            l.biases -= learning_rate/len(batch)*sb
+            l.weights -= learning_rate*(reg*l.weights + sw/len(batch))
 
     def accuracy(self, test):
         acc = 0
@@ -108,22 +131,20 @@ class NeuralNetwork(object):
         acc /= len(test[0])
         return acc
 
-    def GD(self, learning_rate, train, epochs, test):
+    def GD(self, learning_rate, train, epochs, test, reg=0.0):
         for i in range(epochs):
-            inputs, labels = train
-            self.train_batch(inputs, labels, learning_rate)
+            self.train_batch(zip(*train), learning_rate, reg=reg/len(train[0]))
             accuracy = self.accuracy(test)
             print("Epoch {} complete : {}".format(i+1, accuracy))
 
-    def SGD(self, learning_rate, train, epochs, batch_size, test):
+    def SGD(self, learning_rate, train, epochs, batch_size, test, reg=0.0):
         for i in range(epochs):
             zipped_train = zip(*train)
             np.random.shuffle(zipped_train)
             batches = [zipped_train[k:k+batch_size]
                 for k in range(0, len(zipped_train), batch_size)]
             for batch in batches:
-                inputs, labels = zip(*batch)
-                self.train_batch(inputs, labels, learning_rate)
+                self.train_batch(batch, learning_rate, reg=reg/len(zipped_train))
             accuracy = self.accuracy(test)
             print("Epoch {} complete : {}".format(i+1, accuracy))
            
@@ -138,16 +159,7 @@ class NeuralNetwork(object):
             layer.randomize()
 
 if __name__ == '__main__':
-    nn = NeuralNetwork([784, 30, 10])
+    nn = NeuralNetwork([784, 30, 10], cost='ce')
     train, test = load_mnist()
     nn.randomize()
-    #for sample in train[0]:
-    #    nn.layers[0].forward(sample)
-    #    nn.layers[1].forward(nn.layers[0].activation)
-    #for sample in train[0]:
-    #    nn.forward_propagation(sample)
-    #print nn.layers[0].weights
-    #print nn.layers[0].biases + nn.layers[0].weights.dot(train[0][0])
-    #print sigmoid(nn.layers[0].biases + nn.layers[0].weights.dot(train[0][0]))
-    #print nn.layers[0].activation
-    nn.SGD(1.0, train, 50, 10, test)
+    nn.SGD(0.5, train, 50, 10, test, reg=5.0)
