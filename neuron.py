@@ -132,12 +132,14 @@ class NeuralNetwork(object):
         return acc
 
     def GD(self, learning_rate, train, epochs, test, reg=0.0):
+        """Regular gradient descent."""
         for i in range(epochs):
             self.train_batch(zip(*train), learning_rate, reg=reg/len(train[0]))
             accuracy = self.accuracy(test)
             print("Epoch {} complete : {}".format(i+1, accuracy))
 
     def SGD(self, learning_rate, train, epochs, batch_size, test, reg=0.0):
+        """Stochastic gradient descent."""
         for i in range(epochs):
             zipped_train = zip(*train)
             np.random.shuffle(zipped_train)
@@ -149,12 +151,14 @@ class NeuralNetwork(object):
             print("Epoch {} complete : {}".format(i+1, accuracy))
            
     def predict(self, sample):
+        """For a sample, return the NN's prediction"""
         nn_output = self.forward_propagation(sample)
         out = np.zeros_like(nn_output)
         out[np.argmax(nn_output)] = 1.0
         return out
 
     def randomize(self):
+        """Randomize the weights of every layer"""
         for layer in self.layers:
             layer.randomize()
 
